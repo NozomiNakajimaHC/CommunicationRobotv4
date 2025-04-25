@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIアバター会話アプリ</title>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #f5f5f5;
+        }
+        
+        .container {
+            width: 100%;
+            max-width: 800px;
+            margin: 20px auto;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        
+        .avatar-container {
+            width: 400px;
+            height: 400px;
+            border-radius: 10px;
+            background-color: #ffffff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        #avatar-image {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        .controls {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .status {
+            margin-bottom: 10px;
+            color: #555;
+            font-weight: bold;
+        }
+        
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 30px;
+            background-color: #4CAF50;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        
+        button:hover {
+            background-color: #45a049;
+        }
+        
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        
+        .transcript {
+            width: 100%;
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            background-color: #ffffff;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        
+        .message {
+            margin-bottom: 10px;
+            padding: 8px 12px;
+            border-radius: 8px;
+        }
+        
+        .user-message {
+            background-color: #e3f2fd;
+            align-self: flex-end;
+        }
+        
+        .ai-message {
+            background-color: #f1f8e9;
+            align-self: flex-start;
+        }
+
+        #audioLevelMeter {
+            width: 100%;
+            height: 10px;
+            background-color: #e0e0e0;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+
+        #audioLevelBar {
+            height: 100%;
+            width: 0%;
+            background-color: #4CAF50;
+            border-radius: 5px;
+            transition: width 0.1s ease;
+        }
+        
+        @media (max-width: 600px) {
+            .avatar-container {
+                width: 300px;
+                height: 300px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>AIアバター会話アプリ</h1>
+        
+        <div class="avatar-container">
+            <img id="avatar-image" src="/api/placeholder/400/400" alt="AIアバター">
+        </div>
+        
+        <div id="audioLevelMeter">
+            <div id="audioLevelBar"></div>
+        </div>
+        
+        <div class="status" id="status-message">準備完了</div>
+        
+        <div class="controls">
+            <button id="start-button">会話を開始</button>
+            <button id="stop-button" disabled>会話を終了</button>
+        </div>
+        
+        <div class="transcript" id="transcript">
+            <h3>会話履歴</h3>
+            <div id="messages"></div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.1/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/simple-peer/9.11.1/simplepeer.min.js"></script>
+    <script>
+        // DOM Elements
+        const startButton = document.getElementById('start-button');
+        const stopButton = document.getElementById('stop-button');
+        const statusMessage = document.getElementById('status-message');
+        const messagesContainer = document.getElementById('messages');
+        const audioLevelBar = document.getElementById('audioLevelBar');
+        const avatarImage = document.getElementById('avatar-image');
+        
+        // WebRTC と音声関連の変数
+        let mediaStream = null;
+        let peer = null;
+        let socket = null;
+        let audioContext = null;
+        let analyser = null;
+        let isConnected = false;
+        let isListening = false;
+        
+        // 口の動きに使用するアバターの画像
+        const avatarStates = {
+            idle: "/api/placeholder/400/400?text=idle",
+            speaking: "/api/placeholder/400/400?text=speaking"
+        };
+        
+        // ソケット接続の初期化
+        function initializeSocket() {
+            // 本番環境では適切なURLに変更してください
+            socket = io('/');
+            
+            socket.on('connect', () => {
+                console.log('Socket connected');
+                statusMessage.textContent = 'サーバーに接続しました';
+            });
+            
+            socket.on('signal', (data) => {
+                if (peer) {
+                    peer.signal(data);
+                }
+            });
+            
+            socket.on('disconnect', () => {
+                console.log('Socket disconnected');
+                statusMessage.textContent = 'サーバーから切断されました';
+                stopConversation();
+            });
+        }
+        
+        // WebRTC接続の初期化
+        async function initializeWebRTC() {
+            try {
+                // マイクへのアクセス要求
+                mediaStream = await navigator.mediaDevices.getUserMedia({
+                    audio: true,
+                    video: false
+                });
+                
+                statusMessage.textContent = 'マイクへのアクセスを許可しました';
+                
+                // 音声分析の設定
+                setupAudioAnalysis(mediaStream);
+                
+                // Simple Peerの初期化
+                peer = new SimplePeer({
+                    initiator: true,
+                    stream: mediaStream,
+                    trickle: false
+                });
+                
+                peer.on('signal', (data) => {
+                    // シグナリングデータをサーバーに送信
+                    socket.emit('signal', data);
+                });
+                
+                peer.on('connect', () => {
+                    console.log('Peer connection established');
+                    statusMessage.textContent = 'AIと接続しました';
+                    isConnected = true;
+                });
+                
+                peer.on('data', (data) => {
+                    const message = JSON.parse(data.toString());
+                    handleAIResponse(message);
+                });
+                
+                peer.on('stream', (stream) => {
+                    // AIからの音声ストリームを再生
+                    const audio = new Audio();
+                    audio.srcObject = stream;
+                    audio.play();
+                });
+                
+                peer.on('error', (err) => {
+                    console.error('Peer error:', err);
+                    statusMessage.textContent = '接続エラーが発生しました';
+                });
+                
+                peer.on('close', () => {
+                    console.log('Peer connection closed');
+                    stopConversation();
+                });
+                
+                startButton.disabled = false;
+                
+            } catch (error) {
+                console.error('Error accessing media devices:', error);
+                statusMessage.textContent = 'マイクへのアクセスが拒否されました';
+            }
+        }
+        
+        // 音声レベルの分析設定
+        function setupAudioAnalysis(stream) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioContext.createMediaStreamSource(stream);
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256;
+            source.connect(analyser);
+            
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            
+            function updateAudioLevel() {
+                if (!isListening) return;
+                
+                analyser.getByteFrequencyData(dataArray);
+                let sum = 0;
+                for (let i = 0; i < bufferLength; i++) {
+                    sum += dataArray[i];
+                }
+                const average = sum / bufferLength;
+                const level = Math.min(100, average * 2);
+                audioLevelBar.style.width = level + '%';
+                
+                requestAnimationFrame(updateAudioLevel);
+            }
+            
+            updateAudioLevel();
+        }
+        
+        // AI応答の処理
+        function handleAIResponse(message) {
+            if (message.type === 'transcript') {
+                // AIの応答をトランスクリプトに追加
+                addMessage(message.text, false);
+                animateAvatar(true);
+                
+                // 音声が終わったらアバターをアイドル状態に戻す
+                setTimeout(() => {
+                    animateAvatar(false);
+                }, message.duration || 2000);
+            }
+        }
+        
+        // アバターのアニメーション
+        function animateAvatar(isSpeaking) {
+            avatarImage.src = isSpeaking ? avatarStates.speaking : avatarStates.idle;
+        }
+        
+        // メッセージを会話履歴に追加
+        function addMessage(text, isUser) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${isUser ? 'user-message' : 'ai-message'}`;
+            messageDiv.textContent = text;
+            messagesContainer.appendChild(messageDiv);
+            messageDiv.scrollIntoView({ behavior: 'smooth' });
+        }
+        
+        // 会話開始
+        function startConversation() {
+            if (!isConnected) {
+                statusMessage.textContent = '接続中...';
+                initializeWebRTC();
+                return;
+            }
+            
+            isListening = true;
+            startButton.disabled = true;
+            stopButton.disabled = false;
+            statusMessage.textContent = '会話中...';
+            
+            // サーバーに会話開始を通知
+            socket.emit('startConversation');
+            
+            // 音声認識の開始（WebRTCを介して）
+            addMessage('会話を開始しました。話しかけてください。', false);
+        }
+        
+        // 会話終了
+        function stopConversation() {
+            isListening = false;
+            
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+            }
+            
+            if (peer) {
+                peer.destroy();
+                peer = null;
+            }
+            
+            startButton.disabled = false;
+            stopButton.disabled = true;
+            statusMessage.textContent = '会話を終了しました';
+            audioLevelBar.style.width = '0%';
+            
+            if (socket) {
+                socket.emit('stopConversation');
+            }
+        }
+        
+        // イベントリスナー
+        startButton.addEventListener('click', startConversation);
+        stopButton.addEventListener('click', stopConversation);
+        
+        // ページ読み込み時にソケット接続を初期化
+        window.addEventListener('load', () => {
+            initializeSocket();
+        });
+    </script>
+</body>
+</html>
