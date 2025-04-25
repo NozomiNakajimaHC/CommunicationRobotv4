@@ -30,34 +30,3 @@
   }
 }
 
-// .env
-OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_WEBRTC_URL=https://api.openai.com/v1/audio/webrtc
-PORT=3000
-
-// .gitignore
-node_modules/
-.env
-.DS_Store
-npm-debug.log
-yarn-error.log
-.vscode/
-
-// netlify.toml
-[build]
-  command = "npm install"
-  publish = "public"
-  functions = "functions"
-
-[dev]
-  command = "npm run dev"
-
-[[redirects]]
-  from = "/api/*"
-  to = "/.netlify/functions/:splat"
-  status = 200
-
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
